@@ -58,6 +58,14 @@ add_rmqlog_filter(LogLevels) ->
     ok = logger:set_primary_config(level, all),
     ok = persistent_term:put(?CONFIGURED_KEY, true).
 
+%% filter out all supervisor progress reports
+filter_log_event(#{msg := {report, #{label:= {_, progress}}}} = LogEvent, FilterConfig) ->
+    GlobalLevel = get_min_level(global, FilterConfig),
+    %% if global log level is not debug, drop progress reports
+    case logger:compare_levels(GlobalLevel, debug) of
+        gt -> stop;
+        _  -> LogEvent
+    end;
 filter_log_event(
   #{meta := #{domain := ?RMQLOG_DOMAIN_GLOBAL}} = LogEvent,
   FilterConfig) ->
