@@ -509,6 +509,7 @@ update(Q, State)
 update_leader_pid(Pid, #stream_client{leader = Pid} =  State) ->
     State;
 update_leader_pid(Pid, #stream_client{} =  State) ->
+    rabbit_log:debug("stream client: new leader detected ~w", [Pid]),
     resend_all(State#stream_client{leader = Pid}).
 
 state_info(_) ->
@@ -708,6 +709,9 @@ stream_entries(Name, LeaderPid,
                 false ->
                     {Str0#stream{log = Seg}, MsgIn}
             end;
+        {error, Err} ->
+            rabbit_log:debug("stream client: error reading chunk ~w", [Err]),
+            exit(Err);
         {Records, Seg} ->
             Msgs = [begin
                         Msg0 = binary_to_msg(QName, B),
@@ -785,6 +789,12 @@ resend_all(#stream_client{leader = LeaderPid,
                           writer_id = WriterId,
                           correlation = Corrs} = State) ->
     Msgs = lists:sort(maps:values(Corrs)),
+    case Msgs of
+        [] -> ok;
+        [{Seq, _} | _] ->
+            rabbit_log:debug("stream client: resending from seq ~w num ~b",
+                             [Seq, maps:size(Corrs)])
+    end,
     [begin
          ok = osiris:write(LeaderPid, WriterId, Seq, msg_to_iodata(Msg))
      end || {Seq, Msg} <- Msgs],

@@ -1241,7 +1241,13 @@ leader_failover(Config) ->
 leader_failover_dedupe(Config) ->
     %% tests that in-flight messages are automatically handled in the case where
     %% a leader change happens during publishing
-    [_Server1, DownNode, PubNode] = Nodes = rabbit_ct_broker_helpers:get_node_configs(Config, nodename),
+    PermNodes = permute(
+                  rabbit_ct_broker_helpers:get_node_configs(Config, nodename)),
+    %% pick a random node order for this test
+    %% realle we should run all permuations
+    Nodes = lists:nth(rand:uniform(length(PermNodes)), PermNodes),
+    ct:pal("~s running with nodes ~w", [?FUNCTION_NAME, Nodes]),
+    [_Server1, DownNode, PubNode] = Nodes,
     Ch1 = rabbit_ct_client_helpers:open_channel(Config, DownNode),
     Q = ?config(queue_name, Config),
 
@@ -1726,7 +1732,8 @@ validate_dedupe(Ch, N, N) ->
             ok = amqp_channel:cast(Ch, #'basic.ack'{delivery_tag = DeliveryTag,
                                                     multiple     = false})
     after 60000 ->
-            exit({missing_record, N})
+              flush(),
+              exit({missing_record, N})
     end;
 validate_dedupe(Ch, N, M) ->
     receive
@@ -1738,7 +1745,8 @@ validate_dedupe(Ch, N, M) ->
                                                     multiple     = false}),
             validate_dedupe(Ch, N + 1, M)
     after 60000 ->
-            exit({missing_record, N})
+              flush(),
+              exit({missing_record, N})
     end.
 
 receive_batch(Ch, N, N) ->
@@ -1748,7 +1756,8 @@ receive_batch(Ch, N, N) ->
             ok = amqp_channel:cast(Ch, #'basic.ack'{delivery_tag = DeliveryTag,
                                                     multiple     = false})
     after 60000 ->
-            exit({missing_offset, N})
+              flush(),
+              exit({missing_offset, N})
     end;
 receive_batch(Ch, N, M) ->
     receive
@@ -1762,7 +1771,8 @@ receive_batch(Ch, N, M) ->
                                                     multiple     = false}),
             receive_batch(Ch, N + 1, M)
     after 60000 ->
-            exit({missing_offset, N})
+              flush(),
+              exit({missing_offset, N})
     end.
 
 receive_batch() ->

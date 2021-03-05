@@ -241,10 +241,6 @@ query_local_pid(StreamId, Node, #?MODULE{streams = Streams}) ->
                                                 {running, _, Pid}}}}} ->
             {ok, Pid};
         _ ->
-            rabbit_log:debug("NOT FOUND ~w ~p",
-                             [StreamId,
-                              Streams]),
-
             {error, not_found}
     end.
 
@@ -328,7 +324,6 @@ init(_Conf) ->
 apply(#{index := _Idx} = Meta0, {_CmdTag, StreamId, #{}} = Cmd,
       #?MODULE{streams = Streams0,
                monitors = Monitors0} = State0) ->
-    % rabbit_log:debug("~s: term ~b cmd ~w", [?MODULE, Term, Cmd]),
     Stream0 = maps:get(StreamId, Streams0, undefined),
     Meta = maps:without([term, machine_version], Meta0),
     Stream1 = update_stream(Meta, Cmd, Stream0),
@@ -341,23 +336,22 @@ apply(#{index := _Idx} = Meta0, {_CmdTag, StreamId, #{}} = Cmd,
             end,
     case Stream1 of
         undefined ->
-            {State0#?MODULE{streams = maps:remove(StreamId, Streams0)},
-             Reply, []};
+            return(Meta, State0#?MODULE{streams = maps:remove(StreamId, Streams0)},
+                   Reply, []);
         _ ->
             {Stream2, Effects0} = evaluate_stream(Meta, Stream1, []),
             {Stream3, Effects1} = eval_listeners(Stream2, Effects0),
             {Stream, Effects2} = eval_retention(Meta, Stream3, Effects1),
             {Monitors, Effects} = ensure_monitors(Stream, Monitors0, Effects2),
-            {State0#?MODULE{streams = Streams0#{StreamId => Stream},
-                            monitors = Monitors}, Reply, Effects}
+            return(Meta,
+                   State0#?MODULE{streams = Streams0#{StreamId => Stream},
+                                  monitors = Monitors}, Reply, Effects)
     end;
 apply(Meta, {down, Pid, Reason} = Cmd,
       #?MODULE{streams = Streams0,
                listeners = Listeners0,
                monitors = Monitors0} = State) ->
 
-    rabbit_log:debug("rabbit_stream_coordinator: down ~W",
-                     [Cmd, 10]),
     Effects0 = case Reason of
                    noconnection ->
                        [{monitor, node, node(Pid)}];
@@ -379,29 +373,28 @@ apply(Meta, {down, Pid, Reason} = Cmd,
                                         Listeners1#{StreamId => Pids}
                                 end
                         end,
-            {State#?MODULE{listeners = Listeners,
-                           monitors = Monitors}, ok, Effects0};
+            return(Meta, State#?MODULE{listeners = Listeners,
+                                       monitors = Monitors}, ok, Effects0);
         {{StreamId, member}, Monitors1} ->
             case Streams0 of
                 #{StreamId := Stream0} ->
                     Stream1 = update_stream(Meta, Cmd, Stream0),
                     {Stream, Effects} = evaluate_stream(Meta, Stream1, Effects0),
                     Streams = Streams0#{StreamId => Stream},
-                    {State#?MODULE{streams = Streams,
-                                   monitors = Monitors1}, ok, Effects};
+                    return(Meta, State#?MODULE{streams = Streams,
+                                               monitors = Monitors1}, ok,
+                           Effects);
                 _ ->
                     %% stream not found, can happen if "late" downs are
                     %% received
-                    {State#?MODULE{streams = Streams0,
-                                   monitors = Monitors1}, ok, Effects0}
+                    return(Meta, State#?MODULE{streams = Streams0,
+                                               monitors = Monitors1}, ok, Effects0)
             end;
         error ->
-            {State, ok, Effects0}
+            return(Meta, State, ok, Effects0)
     end;
-apply(_, {timeout, {aux, Cmd}}, State) ->
-    {State, ok, [{aux, Cmd}]};
-apply(_Meta, {register_listener, #{pid := Pid,
-                                   stream_id := StreamId}},
+apply(Meta, {register_listener, #{pid := Pid,
+                                  stream_id := StreamId}},
       #?MODULE{streams = Streams,
                monitors = Monitors0} = State0) ->
     case Streams of
@@ -409,11 +402,12 @@ apply(_Meta, {register_listener, #{pid := Pid,
             Stream1 = Stream0#stream{listeners = maps:put(Pid, undefined, Listeners0)},
             {Stream, Effects} = eval_listeners(Stream1, []),
             Monitors = maps:put(Pid, {StreamId, listener}, Monitors0),
-            {State0#?MODULE{streams = maps:put(StreamId, Stream, Streams),
-                            monitors = Monitors}, ok,
-             [{monitor, process, Pid} | Effects]};
+            return(Meta,
+                   State0#?MODULE{streams = maps:put(StreamId, Stream, Streams),
+                                  monitors = Monitors}, ok,
+                   [{monitor, process, Pid} | Effects]);
         _ ->
-            {State0, stream_not_found, []}
+            return(Meta, State0, stream_not_found, [])
     end;
 apply(Meta, {nodeup, Node} = Cmd,
       #?MODULE{monitors = Monitors0,
@@ -437,29 +431,32 @@ apply(Meta, {nodeup, Node} = Cmd,
                           {S, E} = evaluate_stream(Meta, S1, E0),
                           {Ss#{Id => S}, E}
                   end, {Streams0, Effects0}, Streams0),
-    {State#?MODULE{monitors = Monitors,
-                   streams = Streams}, ok, Effects};
-apply(_Meta, UnkCmd, State) ->
-
+    return(Meta, State#?MODULE{monitors = Monitors,
+                               streams = Streams}, ok, Effects);
+apply(Meta, UnkCmd, State) ->
     rabbit_log:debug("rabbit_stream_coordinator: unknown command ~W",
                      [UnkCmd, 10]),
-    {State, {error, unknown_command}, []}.
+    return(Meta, State, {error, unknown_command}, []).
+
+return(#{index := Idx}, State, Reply, Effects) ->
+    case Idx rem 4096 == 0 of
+        true ->
+            %% add release cursor effect
+            {State, Reply, [{release_cursor, Idx, State} | Effects]};
+        false ->
+            {State, Reply, Effects}
+    end.
 
 state_enter(recover, _) ->
     put('$rabbit_vm_category', ?MODULE),
     [];
 state_enter(leader, #?MODULE{monitors = Monitors}) ->
-    rabbit_log:debug("~s: state enter leader mons: ~p",
-                     [?MODULE, Monitors]),
     Pids = maps:keys(Monitors),
     Nodes = maps:from_list([{node(P), ok} || P <- Pids]),
     NodeMons = [{monitor, node, N} || N <- maps:keys(Nodes)],
     NodeMons ++ [{aux, fail_active_actions} |
                  [{monitor, process, P} || P <- Pids]];
-state_enter(S, _) ->
-    rabbit_log:debug("coordinator state enter: ~s", [S]),
-    %% TODO: need to reset all running tasks, this will need to be a special
-    %% reset command
+state_enter(_S, _) ->
     [].
 
 tick(_Ts, _State) ->
@@ -1135,7 +1132,6 @@ update_stream(#{system_time := _Ts},
             Members = Members0#{DownNode => Member#member{state = {down, E}}},
             Stream0#stream{members = Members};
         _ ->
-            rabbit_log:debug("NOT HANDLED ~p ~w", [maps:get(DownNode, Members0), Pid]),
             Stream0
     end;
 update_stream(#{system_time := _Ts},
