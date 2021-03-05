@@ -61,11 +61,11 @@ add_rmqlog_filter(LogLevels) ->
 %% filter out all supervisor progress reports
 filter_log_event(#{msg := {report, #{label:= {_, progress}}}} = LogEvent, FilterConfig) ->
     GlobalLevel = get_min_level(global, FilterConfig),
-    %% if global log level is not debug, drop progress reports
-    case logger:compare_levels(GlobalLevel, debug) of
-        gt -> stop;
-        _  -> LogEvent
-    end;
+    do_filter_log_event_out_unless_debug(LogEvent, GlobalLevel);
+%% filter out all error_logger info messages
+filter_log_event(#{msg := {report, #{label:= {_, info_msg}}}} = LogEvent, FilterConfig) ->
+    GlobalLevel = get_min_level(global, FilterConfig),
+    do_filter_log_event_out_unless_debug(LogEvent, GlobalLevel);
 filter_log_event(
   #{meta := #{domain := ?RMQLOG_DOMAIN_GLOBAL}} = LogEvent,
   FilterConfig) ->
@@ -98,6 +98,13 @@ do_filter_log_event(_, none) ->
 do_filter_log_event(#{level := Level} = LogEvent, MinLevel) ->
     case logger:compare_levels(Level, MinLevel) of
         lt -> stop;
+        _  -> LogEvent
+    end.
+
+do_filter_log_event_out_unless_debug(LogEvent, EffectiveLevel) ->
+    %% if global log level is not debug, drop these messages
+    case logger:compare_levels(EffectiveLevel, debug) of
+        gt -> stop;
         _  -> LogEvent
     end.
 
