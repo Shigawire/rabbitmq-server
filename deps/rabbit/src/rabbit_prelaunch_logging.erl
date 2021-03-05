@@ -1048,7 +1048,7 @@ do_add_cat_filter(#{filters := Filters} = Handler, CatName, Level) ->
                               {?FILTER_NAME, {Fun, FilterConfig1}}),
     Handler#{filters => Filters1}.
 
--spec filter_log_event(logger:log_even(), term()) -> logger:filter_return().
+-spec filter_log_event(logger:log_event(), term()) -> logger:filter_return().
 
 filter_log_event(LogEvent, FilterConfig) ->
     rabbit_prelaunch_early_logging:filter_log_event(LogEvent, FilterConfig).
